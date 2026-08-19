@@ -14,7 +14,7 @@ class Task07Retry {
     retryCount: Long,
     fallback: String,
   ): Mono<String> =
-    remoteCall()
+    Mono.defer { remoteCall() }
       .retry(retryCount)
       .onErrorReturn(fallback)
     //TODO("Task 07: use retry and onErrorReturn/onErrorResume")
