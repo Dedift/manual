@@ -1,8 +1,6 @@
 package mm.manual.tasks
 
 import reactor.core.publisher.Mono
-import reactor.kotlin.core.util.function.component1
-import reactor.kotlin.core.util.function.component2
 
 data class Account(
   val id: String,

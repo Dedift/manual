@@ -2,8 +2,6 @@ package mm.manual.tasks
 
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
-import reactor.kotlin.core.publisher.toMono
-import reactor.kotlin.extra.math.sumAll
 
 data class OrderLine(
   val product: String,
