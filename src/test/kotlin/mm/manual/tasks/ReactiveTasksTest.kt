@@ -501,4 +501,201 @@ class ReactiveTasksTest {
     kotlin.test.assertEquals(listOf("book", "cup"), reserved)
     kotlin.test.assertEquals(listOf("book"), charged)
   }
+
+  @Test
+  fun `task 21 emits totals for fixed size batches`() {
+    val task = Task21Buffer()
+
+    val result = task.batchTotals(
+      readings = Flux.just(
+        SensorReading("s1", 10),
+        SensorReading("s1", 5),
+        SensorReading("s2", 7),
+        SensorReading("s2", 3),
+        SensorReading("s2", 4),
+      ),
+      batchSize = 2,
+    )
+
+    StepVerifier.create(result)
+      .expectNext(
+        ReadingBatch("s1", 15),
+        ReadingBatch("s2", 10),
+        ReadingBatch("s2", 4),
+      )
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 22 parses only positive numbers`() {
+    val task = Task22Handle()
+
+    StepVerifier.create(task.positiveNumbers(Flux.just(" 42 ", "bad", "0", "-7", "15")))
+      .expectNext(42, 15)
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 23 emits balance after each change`() {
+    val task = Task23Scan()
+
+    val result = task.balanceHistory(
+      changes = Flux.just(BalanceChange(50), BalanceChange(-20), BalanceChange(5)),
+      initialBalance = 100,
+    )
+
+    StepVerifier.create(result)
+      .expectNext(
+        BalanceSnapshot(150),
+        BalanceSnapshot(130),
+        BalanceSnapshot(135),
+      )
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 24 combines latest price and stock`() {
+    val task = Task24CombineLatest()
+
+    val result = task.catalogStates(
+      prices = Flux.just(PriceTick("sku-1", 100), PriceTick("sku-1", 120)),
+      stocks = Flux.just(StockTick("sku-1", false), StockTick("sku-1", true)),
+    )
+
+    StepVerifier.create(result)
+      .expectNext(
+        CatalogState("sku-1", 120, false),
+        CatalogState("sku-1", 120, true),
+      )
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 25 emits messages only after audit is saved`() {
+    val task = Task25DelayUntil()
+    val events = mutableListOf<String>()
+
+    val result = task.emitAfterAudit(
+      messages = Flux.just(OutboxMessage("m1", "created"), OutboxMessage("m2", "paid")),
+      saveAudit = { message ->
+        events += "audit:${message.id}"
+        Mono.just(Unit)
+      },
+    )
+      .doOnNext { events += "emit:${it.id}" }
+
+    StepVerifier.create(result)
+      .expectNext(OutboxMessage("m1", "created"), OutboxMessage("m2", "paid"))
+      .verifyComplete()
+
+    kotlin.test.assertEquals(listOf("audit:m1", "emit:m1", "audit:m2", "emit:m2"), events)
+  }
+
+  @Test
+  fun `task 26 stops events when stop signal emits`() {
+    val task = Task26TakeUntilOther()
+
+    StepVerifier.withVirtualTime {
+      task.eventsUntilStop(
+        events = Flux.interval(Duration.ofMillis(100)).map { "event-$it" },
+        stopSignal = Mono.delay(Duration.ofMillis(350)).thenReturn(Unit),
+      )
+    }
+      .thenAwait(Duration.ofMillis(350))
+      .expectNext("event-0", "event-1", "event-2")
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 27 converts successful and failed source to report`() {
+    val task = Task27Materialize()
+
+    StepVerifier.create(task.report(Flux.just("a", "b")))
+      .expectNext(LoadReport(listOf("a", "b"), null))
+      .verifyComplete()
+
+    StepVerifier.create(task.report(Flux.concat(Flux.just("a"), Flux.error(IllegalStateException("boom")))))
+      .expectNext(LoadReport(listOf("a"), "boom"))
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 28 caches loaded value for later subscribers`() {
+    val task = Task28Cache()
+    val calls = AtomicInteger(0)
+
+    val cached = task.cachedValue {
+      Mono.fromSupplier { "value-${calls.incrementAndGet()}" }
+    }
+
+    StepVerifier.create(cached)
+      .expectNext("value-1")
+      .verifyComplete()
+
+    StepVerifier.create(cached)
+      .expectNext("value-1")
+      .verifyComplete()
+
+    kotlin.test.assertEquals(1, calls.get())
+  }
+
+  @Test
+  fun `task 29 emits latest nonblank search after pause`() {
+    val task = Task29SampleTimeout()
+
+    StepVerifier.withVirtualTime {
+      task.debouncedSearches(
+        inputs = Flux.concat(
+          Mono.just(SearchInput("   ")),
+          Mono.just(SearchInput("r")),
+          Mono.delay(Duration.ofMillis(100)).thenReturn(SearchInput("re")),
+          Mono.delay(Duration.ofMillis(500)).thenReturn(SearchInput("reactor")),
+        ),
+        debounce = Duration.ofMillis(300),
+      )
+    }
+      .thenAwait(Duration.ofMillis(400))
+      .expectNext("re")
+      .thenAwait(Duration.ofMillis(200))
+      .expectNext("reactor")
+      .verifyComplete()
+  }
+
+  @Test
+  fun `task 30 processes notifications in input order`() {
+    val task = Task30NotificationPipeline()
+    val sent = mutableListOf<String>()
+
+    val result = task.process(
+      commands = Flux.just(
+        NotificationCommand("u1", "email", "hello"),
+        NotificationCommand("u2", "sms", "muted"),
+        NotificationCommand("u3", "push", "   "),
+        NotificationCommand("u4", "email", "fail settings"),
+        NotificationCommand("u5", "push", "fail send"),
+      ),
+      loadSettings = { userId ->
+        if (userId == "u4") Mono.error(IllegalStateException("settings down"))
+        else Mono.just(UserSettings(userId, mutedChannels = if (userId == "u2") setOf("sms") else emptySet()))
+      },
+      send = { command ->
+        if (command.userId == "u5") Mono.error(IllegalStateException("send down"))
+        else {
+          sent += command.userId
+          Mono.just(Unit)
+        }
+      },
+    )
+
+    StepVerifier.create(result)
+      .expectNext(
+        NotificationResult("u1", "email", "sent"),
+        NotificationResult("u2", "sms", "muted"),
+        NotificationResult("u4", "email", "failed"),
+        NotificationResult("u5", "push", "failed"),
+      )
+      .verifyComplete()
+
+    kotlin.test.assertEquals(listOf("u1"), sent)
+  }
 }
